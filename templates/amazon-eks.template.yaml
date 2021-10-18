@@ -405,8 +405,8 @@ Resources:
         NodeSecurityGroupId: !GetAtt AdvancedConfiguration.default_nodegroup_NodeSecurityGroupId
         LaunchTemplateId: !GetAtt AdvancedConfiguration.default_nodegroup_LaunchTemplateId
         LaunchTemplateVersion: !GetAtt AdvancedConfiguration.default_nodegroup_LaunchTemplateVersion
-        WindowsVersion: !GetAtt AdvancedConfiguration.default_nodegroup_WindowsNodeVersion
-        WindowsEdition: !GetAtt AdvancedConfiguration.default_nodegroup_WindowsNodeEdition
+        WindowsVersion: !GetAtt AdvancedConfiguration.windows_nodegroup_WindowsNodeVersion
+        WindowsEdition: !GetAtt AdvancedConfiguration.windows_nodegroup_WindowsNodeEdition
         EC2MetadataPutResponseHopLimit: !GetAtt AdvancedConfiguration.default_nodegroup_EC2MetadataPutResponseHopLimit
         EC2MetadataHttpTokens: !GetAtt AdvancedConfiguration.default_nodegroup_EC2MetadataHttpTokens
   WindowsSupportNodeGroupStack:
