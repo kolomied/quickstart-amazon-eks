@@ -734,3 +734,51 @@ Resources:
                   status = cfnresponse.FAILED
               finally:
                   cfnresponse.send(event, context, status, {}, event.get('PhysicalResourceId', context.log_stream_name))
+  AdvancedConfigurationAccessFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ['${Prefix}-AdvancedConfigurationAccess', {Prefix: !FindInMap [Config, Prefix, Value]}]
+      Description: Provides access to advanced EKS configuration parameters
+      Handler: index.handler
+      Runtime: python3.7
+      Role: !Sub ["arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${Prefix}-ParameterResolver", {Prefix: !FindInMap [Config, Prefix, Value]}]
+      Timeout: 900
+      Code:
+        ZipFile: |
+          import cfnresponse
+          import logging, boto3, json
+          logger = logging.getLogger(__name__)
+          logger.setLevel(logging.DEBUG)
+          ssm = boto3.client('ssm')
+          def create_output_value(parameter):
+              return json.loads(parameter['Value']).get('Value', '')
+          def create_output_name(parameter_path, parameter):
+              return parameter['Name'] \
+                .replace(parameter_path, '') \
+                .replace('/', '_') \
+                .replace('-', '_') 
+          def get_paramenters(parameter_path, extra_args):
+              response = ssm.get_parameters_by_path(Path=parameter_path, Recursive=True, WithDecryption=True, **extra_args)
+              params, token = response['Parameters'], response.get('NextToken', None)              
+              return { create_output_name(parameter_path, p): create_output_value(p) for p in params }, token
+          def handler(event, context):
+              logger.debug(event)
+              data = {}
+              status = cfnresponse.SUCCESS
+              try:
+                if event['RequestType'] == 'Create':
+                  extra_args = {}
+                  parameter_path = event['ResourceProperties']['ParameterPath']                      
+                  while True:
+                    parameters, next_token = get_paramenters(parameter_path, extra_args)
+                    data = { **data, **parameters }
+                    if next_token:
+                      extra_args['NextToken'] = next_token
+                    else:
+                      break
+              except Exception:
+                logger.error('Unhandled exception', exc_info=True)
+                status = cfnresponse.FAILED
+              finally:
+                logger.debug(data)
+                cfnresponse.send(event, context, status, data, event.get('PhysicalResourceId', context.log_stream_name))

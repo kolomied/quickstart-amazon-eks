@@ -1,6 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: Deploys an EKS cluster into an existing VPC (qs-1p7nknoi6)
-Transform: [QuickStartParameterResolver]
 Metadata:
   QSLint:
     Exclusions: [W9002, W9003, W9004, W9006]
@@ -250,6 +249,14 @@ Parameters:
     Description: DNS domain name that users can use to access the Rancher console.
     Type: String
     Default: rancher.aws.private
+  BastionBootstrapScript:
+    Type: String
+  BastionIAMRoleName:
+    Type: String
+  BastionVariables:
+    Type: String
+  IamOidcProvider:
+    Type: String
 Mappings:
   Config:
     Prefix: { Value: 'eks-quickstart' }
@@ -270,12 +277,12 @@ Conditions:
     - !Not [!Equals [!Ref PrivateSubnet2ID, ""]]
     - !Not [!Equals [!Ref PrivateSubnet3ID, ""]]
   EnablePublicSubnets: !Not [!Equals [!Ref PublicSubnet1ID, ""]]
-  DefaultBastionBootstrap: !Equals [~~/<ConfigSetName>/bastion/BastionBootstrapScript~~, '']
+  DefaultBastionBootstrap: !Equals [!Ref BastionBootstrapScript, ''] 
   EnableBastion: !And
     - !Equals [!Ref 'ProvisionBastionHost', 'Enabled']
     - !Not [!Equals [!Ref PublicSubnet1ID, ""]]
-  CustomBastionRole: !Not [!Equals [~~/<ConfigSetName>/bastion/BastionIAMRoleName~~, '']]
-  AdditionalVars: !Not [!Equals [~~/<ConfigSetName>/bastion/BastionVariables~~, '']]
+  CustomBastionRole: !Not [!Equals [!Ref BastionIAMRoleName, '']] 
+  AdditionalVars: !Not [!Equals [!Ref BastionVariables, '']] 
   EnableClusterAutoScaler: !Equals [!Ref 'ProvisionClusterAutoScaler', 'Enabled']
   EnableMetricsServer: !Equals [!Ref 'ProvisionMetricsServer', 'Enabled']
   EnableLoadBalancerController: !Equals [!Ref 'ProvisionALBIngressController', 'Enabled']
@@ -288,9 +295,16 @@ Conditions:
   EnableOIDC: !Or
     - !Equals [!Ref 'ProvisionALBIngressController', 'Enabled']
     - !Equals [!Ref 'NodeGroupOS', 'Windows']
-    - !Equals [~~/<ConfigSetName>/cluster/IamOidcProvider~~, "Enabled"]
+    - !Equals [!Ref IamOidcProvider, "Enabled"]
   UseKeyPair: !Not [ !Equals [ !Ref KeyPairName, "" ] ]
 Resources:
+  AdvancedConfiguration:
+    Type: Custom::AdvancedConfiguration
+    Properties:
+      ServiceToken: !Sub ['arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${Prefix}-AdvancedConfigurationAccess', { Prefix: !FindInMap [Config, Prefix, Value] }]
+      ParameterPath: !Sub 
+        - '${Prefix}/${ConfigSetName}/'
+        - Prefix: !FindInMap [Config, ParameterPrefix, Value]
   BastionEksPermissions:
     Condition: EnableBastion
     Type: AWS::IAM::Policy
@@ -333,19 +347,19 @@ Resources:
         QSS3KeyPrefix: !Sub '${QSS3KeyPrefix}submodules/quickstart-linux-bastion/'
         QSS3BucketRegion: !Ref QSS3BucketRegion
         RemoteAccessCIDR: !Ref RemoteAccessCIDR
-        BastionInstanceType: ~~/<ConfigSetName>/bastion/BastionInstanceType~~
-        RootVolumeSize: ~~/<ConfigSetName>/bastion/BastionRootVolumeSize~~
+        BastionInstanceType: !GetAtt AdvancedConfiguration.bastion_BastionInstanceType
+        RootVolumeSize: !GetAtt AdvancedConfiguration.bastion_BastionRootVolumeSize
         AlternativeInitializationScript: !If
           - DefaultBastionBootstrap
           - !Sub
             - 'https://${S3Bucket}.s3.${S3Region}.${AWS::URLSuffix}/${QSS3KeyPrefix}scripts/bastion_bootstrap.sh'
             - S3Region: !If [UsingDefaultBucket, !Ref 'AWS::Region', !Ref QSS3BucketRegion]
               S3Bucket: !If [UsingDefaultBucket, !Sub '${QSS3BucketName}-${AWS::Region}', !Ref QSS3BucketName]
-          - ~~/<ConfigSetName>/bastion/BastionBootstrapScript~~
+          - !GetAtt AdvancedConfiguration.bastion_BastionBootstrapScript
         AlternativeIAMRole: !GetAtt IamStack.Outputs.BastionRole
-        BastionAMIOS: ~~/<ConfigSetName>/bastion/BastionOS~~
-        EnableTCPForwarding: ~~/<ConfigSetName>/bastion/BastionEnableTCPForwarding~~
-        EnableX11Forwarding: ~~/<ConfigSetName>/bastion/BastionEnableX11Forwarding~~
+        BastionAMIOS: !GetAtt AdvancedConfiguration.bastion_BastionOS
+        EnableTCPForwarding: !GetAtt AdvancedConfiguration.bastion_BastionEnableTCPForwarding
+        EnableX11Forwarding: !GetAtt AdvancedConfiguration.bastion_BastionEnableX11Forwarding
         EnvironmentVariables: !Sub
         - >
           K8S_CLUSTER_NAME=${EKSControlPlane.Outputs.EKSName},
@@ -353,7 +367,7 @@ Resources:
           K8S_ENDPOINT=${EKSControlPlane.Outputs.EKSEndpoint}${Joiner}
           ${BastionVariables}
         - Joiner: !If [AdditionalVars, ",", ""]
-          BastionVariables: ~~/<ConfigSetName>/bastion/BastionVariables~~
+          BastionVariables: !GetAtt AdvancedConfiguration.bastion_BastionVariables
   NodeGroupStack:
     Type: "AWS::CloudFormation::Stack"
     Metadata:
@@ -376,25 +390,25 @@ Resources:
         NodeInstanceType: !Ref NodeInstanceType
         NumberOfNodes: !Ref NumberOfNodes
         MaxNumberOfNodes: !Ref MaxNumberOfNodes
-        NodeGroupName: ~~/<ConfigSetName>/default-nodegroup/NodeGroupName~~
-        NodeVolumeSize: ~~/<ConfigSetName>/default-nodegroup/NodeVolumeSize~~
-        CustomAmiId: ~~/<ConfigSetName>/default-nodegroup/CustomAmiId~~
+        NodeGroupName: !GetAtt AdvancedConfiguration.default_nodegroup_NodeGroupName
+        NodeVolumeSize: !GetAtt AdvancedConfiguration.default_nodegroup_NodeVolumeSize
+        CustomAmiId: !GetAtt AdvancedConfiguration.default_nodegroup_CustomAmiId
         EKSClusterName: !If [GenerateClusterName, !Ref GenerateName, !Ref EKSClusterName]
         NodeInstanceFamily: !Ref NodeInstanceFamily
         NodeGroupType: !Ref NodeGroupType
-        OndemandPercentage: ~~/<ConfigSetName>/default-nodegroup/OnDemandPercentage~~
-        NodeInstanceType2: ~~/<ConfigSetName>/default-nodegroup/NodeInstanceType2~~
-        NodeInstanceType3: ~~/<ConfigSetName>/default-nodegroup/NodeInstanceType3~~
-        NodeInstanceType4: ~~/<ConfigSetName>/default-nodegroup/NodeInstanceType4~~
-        Labels: ~~/<ConfigSetName>/default-nodegroup/Labels~~
-        Taints: ~~/<ConfigSetName>/default-nodegroup/Taints~~
-        NodeSecurityGroupId: ~~/<ConfigSetName>/default-nodegroup/NodeSecurityGroupId~~
-        LaunchTemplateId: ~~/<ConfigSetName>/default-nodegroup/LaunchTemplateId~~
-        LaunchTemplateVersion: ~~/<ConfigSetName>/default-nodegroup/LaunchTemplateVersion~~
-        WindowsVersion: ~~/<ConfigSetName>/windows-nodegroup/WindowsNodeVersion~~
-        WindowsEdition: ~~/<ConfigSetName>/windows-nodegroup/WindowsNodeEdition~~
-        EC2MetadataPutResponseHopLimit: ~~/<ConfigSetName>/default-nodegroup/EC2MetadataPutResponseHopLimit~~
-        EC2MetadataHttpTokens: ~~/<ConfigSetName>/default-nodegroup/EC2MetadataHttpTokens~~
+        OndemandPercentage: !GetAtt AdvancedConfiguration.default_nodegroup_OnDemandPercentage
+        NodeInstanceType2: !GetAtt AdvancedConfiguration.default_nodegroup_NodeInstanceType2
+        NodeInstanceType3: !GetAtt AdvancedConfiguration.default_nodegroup_NodeInstanceType3
+        NodeInstanceType4: !GetAtt AdvancedConfiguration.default_nodegroup_NodeInstanceType4
+        Labels: !GetAtt AdvancedConfiguration.default_nodegroup_Labels
+        Taints: !GetAtt AdvancedConfiguration.default_nodegroup_Taints
+        NodeSecurityGroupId: !GetAtt AdvancedConfiguration.default_nodegroup_NodeSecurityGroupId
+        LaunchTemplateId: !GetAtt AdvancedConfiguration.default_nodegroup_LaunchTemplateId
+        LaunchTemplateVersion: !GetAtt AdvancedConfiguration.default_nodegroup_LaunchTemplateVersion
+        WindowsVersion: !GetAtt AdvancedConfiguration.default_nodegroup_WindowsNodeVersion
+        WindowsEdition: !GetAtt AdvancedConfiguration.default_nodegroup_WindowsNodeEdition
+        EC2MetadataPutResponseHopLimit: !GetAtt AdvancedConfiguration.default_nodegroup_EC2MetadataPutResponseHopLimit
+        EC2MetadataHttpTokens: !GetAtt AdvancedConfiguration.default_nodegroup_EC2MetadataHttpTokens
   WindowsSupportNodeGroupStack:
     Type: "AWS::CloudFormation::Stack"
     Condition: EnableWindows
@@ -420,8 +434,8 @@ Resources:
         EKSClusterName: !If [GenerateClusterName, !Ref GenerateName, !Ref EKSClusterName]
         NodeInstanceFamily: Standard
         NodeGroupType: Managed
-        EC2MetadataPutResponseHopLimit: ~~/<ConfigSetName>/default-nodegroup/EC2MetadataPutResponseHopLimit~~
-        EC2MetadataHttpTokens: ~~/<ConfigSetName>/default-nodegroup/EC2MetadataHttpTokens~~
+        EC2MetadataPutResponseHopLimit: !GetAtt AdvancedConfiguration.default_nodegroup_EC2MetadataPutResponseHopLimit
+        EC2MetadataHttpTokens: !GetAtt AdvancedConfiguration.default_nodegroup_EC2MetadataHttpTokens
   BastionSShToNodes:
     Condition: EnableBastion
     Type: "AWS::EC2::SecurityGroupIngress"
@@ -458,7 +472,7 @@ Resources:
       Parameters:
         QSS3BucketName: !Ref QSS3BucketName
         CreateBastionRole: !If [CustomBastionRole, "Disabled", !If [EnableBastion, "Enabled", "Disabled"]]
-        BastionIAMRoleName: ~~/<ConfigSetName>/bastion/BastionIAMRoleName~~
+        BastionIAMRoleName: !GetAtt AdvancedConfiguration.bastion_BastionIAMRoleName
         CloudFormationKubernetesVPCRoleExists: !Ref CloudFormationKubernetesVPCRoleExists
   FunctionStack:
     Type: "AWS::CloudFormation::Stack"
@@ -497,7 +511,7 @@ Resources:
       Parameters:
         NodeAutoScalingGroup: !GetAtt NodeGroupStack.Outputs.NodeAutoScalingGroup
         EksClusterName: !GetAtt EKSControlPlane.Outputs.EKSName
-        KubernetesVersion: ~~/<ConfigSetName>/controlplane/KubernetesVersion~~
+        KubernetesVersion: !GetAtt AdvancedConfiguration.controlplane_KubernetesVersion
   MetricsServerStack:
     Condition: EnableMetricsServer
     Metadata:
@@ -530,9 +544,9 @@ Resources:
         PrivateSubnet1ID: !Ref PrivateSubnet1ID
         PrivateSubnet2ID: !If [2AZDeployment, !Ref PrivateSubnet2ID, !Ref "AWS::NoValue" ]
         PrivateSubnet3ID: !If [3AZDeployment, !Ref PrivateSubnet3ID, !Ref "AWS::NoValue" ]
-        PerformanceMode: ~~/<ConfigSetName>/efs/EfsPerformanceMode~~
-        EfsProvisionedThroughputInMibps: ~~/<ConfigSetName>/efs/EfsProvisionedThroughputInMibps~~
-        ThroughputMode: ~~/<ConfigSetName>/efs/EfsThroughputMode~~
+        PerformanceMode: !GetAtt AdvancedConfiguration.efs_EfsPerformanceMode
+        EfsProvisionedThroughputInMibps: !GetAtt AdvancedConfiguration.efs_EfsProvisionedThroughputInMibps
+        ThroughputMode: !GetAtt AdvancedConfiguration.efs_EfsThroughputMode
   CleanupLambdas:
     Type: Custom::LambdaCleanup
     DependsOn: CleanupControlPlaneSecurityGroupDependencies
@@ -589,15 +603,15 @@ Resources:
         RoleArn: !Sub ["arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${Prefix}-ControlPlane", {Prefix: !FindInMap [Config, Prefix, Value]}]
         AdditionalEKSAdminUserArn: !Ref AdditionalEKSAdminUserArn
         AdditionalEKSAdminRoleArn: !Ref AdditionalEKSAdminRoleArn
-        KubernetesVersion: ~~/<ConfigSetName>/controlplane/KubernetesVersion~~
+        KubernetesVersion: !GetAtt AdvancedConfiguration.controlplane_KubernetesVersion
         BastionRole: !GetAtt IamStack.Outputs.BastionRole
         FunctionRoleArn: !GetAtt IamStack.Outputs.KubernetesAdminRoleArn
-        EKSPublicAccessCIDRs: ~~/<ConfigSetName>/controlplane/EKSPublicAccessCIDRs~~
+        EKSPublicAccessCIDRs: !GetAtt AdvancedConfiguration.controlplane_EKSPublicAccessCIDRs
         EKSPublicAccessEndpoint: !Ref EKSPublicAccessEndpoint
-        EKSPrivateAccessEndpoint: ~~/<ConfigSetName>/controlplane/EKSPrivateAccessEndpoint~~
-        EKSClusterLoggingTypes: ~~/<ConfigSetName>/controlplane/EKSClusterLoggingTypes~~
-        EKSEncryptSecrets: ~~/<ConfigSetName>/controlplane/EKSEncryptSecrets~~
-        EKSEncryptSecretsKmsKeyArn: ~~/<ConfigSetName>/controlplane/EKSEncryptSecretsKmsKeyArn~~
+        EKSPrivateAccessEndpoint: !GetAtt AdvancedConfiguration.controlplane_EKSPrivateAccessEndpoint
+        EKSClusterLoggingTypes: !GetAtt AdvancedConfiguration.controlplane_EKSClusterLoggingTypes
+        EKSEncryptSecrets: !GetAtt AdvancedConfiguration.controlplane_EKSEncryptSecrets
+        EKSEncryptSecretsKmsKeyArn: !GetAtt AdvancedConfiguration.controlplane_EKSEncryptSecretsKmsKeyArn
         IamOidcProvider: !If [EnableOIDC, 'Enabled', 'Disabled']
         EKSClusterName: !If [GenerateClusterName, !Ref GenerateName, !Ref EKSClusterName]
   PrometheusStack:
@@ -778,18 +792,18 @@ Resources:
         QSS3BucketName: !Ref QSS3BucketName
         QSS3KeyPrefix: !Sub ${QSS3KeyPrefix}submodules/quickstart-eks-hashicorp-vault/
         QSS3BucketRegion: !Ref QSS3BucketRegion
-        AccessCIDR: ~~/<ConfigSetName>/hashicorp/vault/AccessCIDR~~
-        KubernetesNameSpace: ~~/<ConfigSetName>/hashicorp/vault/KubernetesNameSpace~~
+        AccessCIDR: !GetAtt AdvancedConfiguration.hashicorp_vault_AccessCIDR
+        KubernetesNameSpace: !GetAtt AdvancedConfiguration.hashicorp_vault_KubernetesNameSpace
         PrivateSubnet1ID: !Ref PrivateSubnet1ID
         PrivateSubnet2ID: !Ref PrivateSubnet2ID
         PrivateSubnet3ID: !Ref PrivateSubnet3ID
-        LoadBalancerType: ~~/<ConfigSetName>/hashicorp/vault/LoadBalancerType~~
+        LoadBalancerType: !GetAtt AdvancedConfiguration.hashicorp_vault_LoadBalancerType
         ACMSSLCertificateArn: !Ref VaultUIACMSSLCertificateArn
         HostedZoneID: !Ref VaultUIHostedZoneID
         DomainName: !Ref VaultUIDomainName
-        VaultVersion: ~~/<ConfigSetName>/hashicorp/vault/Version~~
-        VaultDeploymentSize: ~~/<ConfigSetName>/hashicorp/vault/DeploymentSize~~
-        Nodes: ~~/<ConfigSetName>/hashicorp/vault/Nodes~~
+        VaultVersion: !GetAtt AdvancedConfiguration.hashicorp_vault_Version
+        VaultDeploymentSize: !GetAtt AdvancedConfiguration.hashicorp_vault_DeploymentSize
+        Nodes: !GetAtt AdvancedConfiguration.hashicorp_vault_Nodes
   ConsulStack:
     DependsOn: FunctionStack
     Condition: EnableConsul
@@ -811,18 +825,18 @@ Resources:
         QSS3BucketName: !Ref QSS3BucketName
         QSS3KeyPrefix: !Sub ${QSS3KeyPrefix}submodules/quickstart-eks-hashicorp-consul/
         QSS3BucketRegion: !Ref QSS3BucketRegion
-        RemoteAccessCIDR: ~~/<ConfigSetName>/hashicorp/consul/AccessCIDR~~
-        KubernetesNameSpace: ~~/<ConfigSetName>/hashicorp/consul/KubernetesNameSpace~~
+        RemoteAccessCIDR: !GetAtt AdvancedConfiguration.hashicorp_consul_AccessCIDR
+        KubernetesNameSpace: !GetAtt AdvancedConfiguration.hashicorp_consul_KubernetesNameSpace
         PrivateSubnet1ID: !Ref PrivateSubnet1ID
         PrivateSubnet2ID: !Ref PrivateSubnet2ID
         PrivateSubnet3ID: !Ref PrivateSubnet3ID
-        LoadBalancerType: ~~/<ConfigSetName>/hashicorp/consul/LoadBalancerType~~
+        LoadBalancerType: !GetAtt AdvancedConfiguration.hashicorp_consul_LoadBalancerType
         ACMSSLCertificateArn: !Ref ConsulUIACMSSLCertificateArn
         HostedZoneID: !Ref ConsulUIHostedZoneID
         DomainName: !Ref ConsulUIDomainName
-        ConsulVersion: ~~/<ConfigSetName>/hashicorp/consul/Version~~
-        ConsulDeploymentSize: ~~/<ConfigSetName>/hashicorp/consul/DeploymentSize~~
-        ConsulReplicas: ~~/<ConfigSetName>/hashicorp/consul/Nodes~~
+        ConsulVersion: !GetAtt AdvancedConfiguration.hashicorp_consul_Version
+        ConsulDeploymentSize: !GetAtt AdvancedConfiguration.hashicorp_consul_DeploymentSize
+        ConsulReplicas: !GetAtt AdvancedConfiguration.hashicorp_consul_Nodes
   CalicoStack:
     DependsOn: FunctionStack
     Condition: EnableCalico
